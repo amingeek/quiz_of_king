@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>بازی کویز آنلاین</title>
+  <style>
+    body {
+      font-family: Tahoma, sans-serif;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    #gamePanel {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    .question-box {
+      margin: 15px 0;
+      padding: 10px;
+      border: 1px solid #ddd;
+    }
+    .answer-btn {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin: 5px 0;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<div id="gamePanel">
+  <h1>بازی کویز آنلاین</h1>
+  <button id="loginBtn">ورود/ثبت نام</button>
+  <button id="joinQueueBtn" disabled>ورود به صف بازی</button>
+
+  <div id="questionSection" style="display: none;">
+    <div class="question-box" id="questionBox"></div>
+    <div id="answersContainer"></div>
+  </div>
+
+  <div id="status" class="question-box"></div>
+  <div id="output"></div>
+</div>
+
+<script>
+  const socket = new WebSocket('ws://localhost:8080');
+  let gameId = null;
+  let currentQuestion = null;
+  let jwtToken = null;
+
+  // --- توابع کمکی ---
+  function showMessage(text) {
+    const output = document.getElementById('output');
+    output.innerHTML += `<p>${new Date().toLocaleTimeString()}: ${text}</p>`;
+    output.scrollTop = output.scrollHeight;
+  }
+
+  function updateStatus(text) {
+    document.getElementById('status').innerHTML = text;
+  }
+
+  // --- مدیریت رویدادها ---
+  document.getElementById('loginBtn').addEventListener('click', async () => {
+    // در اینجا باید درخواست HTTP به سرور برای لاگین/ثبت نام ارسال شود
+    // فرضی: دریافت توکن از سرور
+    jwtToken = 'fake.jwt.token'; // در واقعیت باید از سرور دریافت شود
+    document.getElementById('joinQueueBtn').disabled = false;
+    updateStatus('شما وارد شدید! آماده بازی هستید.');
+  });
+
+  document.getElementById('joinQueueBtn').addEventListener('click', () => {
+    const message = {
+      action: 'join_queue',
+      token: jwtToken // ارسال توکن برای احراز هویت
+    };
+    socket.send(JSON.stringify(message));
+    updateStatus('در حال یافتن حریف...');
+    showMessage('درخواست ورود به صف بازی ارسال شد');
+  });
+
+  // --- مدیریت پیام‌های سرور ---
+  socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    showMessage(`پیام دریافتی: ${JSON.stringify(data)}`);
+
+    switch(data.action) {
+      case 'start_game':
+        handleStartGame(data);
+        break;
+      case 'game_result':
+        handleGameResult(data);
+        break;
+      case 'next_question':
+        showQuestion(data.question);
+        break;
+      case 'game_over':
+        handleGameOver(data);
+        break;
+    }
+  };
+
+  function handleStartGame(data) {
+    gameId = data.game_id;
+    document.getElementById('questionSection').style.display = 'block';
+    showQuestion(data.question);
+    updateStatus(`بازی شروع شد! مرحله ۱`);
+  }
+
+  function showQuestion(question) {
+    const questionBox = document.getElementById('questionBox');
+    questionBox.innerHTML = `<h3>${question.question}</h3>`;
+
+    const answers = document.getElementById('answersContainer');
+    answers.innerHTML = '';
+
+    // ساخت دکمه‌های پاسخ
+    ['option1', 'option2', 'option3', 'option4'].forEach(option => {
+      const btn = document.createElement('button');
+      btn.className = 'answer-btn';
+      btn.innerHTML = question[option];
+      btn.onclick = () => sendAnswer(option);
+      answers.appendChild(btn);
+    });
+  }
+
+  function sendAnswer(selectedAnswer) {
+    const message = {
+      action: 'answer_question',
+      token: jwtToken,
+      game_id: gameId,
+      answer: selectedAnswer
+    };
+    socket.send(JSON.stringify(message));
+    updateStatus('پاسخ شما ثبت شد! منتظر حریف...');
+  }
+
+  function handleGameResult(data) {
+    updateStatus(
+            `نتیجه مرحله: شما ${data.scores.player1} - حریف ${data.scores.player2}`
+    );
+  }
+
+  function handleGameOver(data) {
+    document.getElementById('questionSection').style.display = 'none';
+    updateStatus(
+            `پایان بازی! امتیاز نهایی: شما ${data.final_scores.player1} - حریف ${data.final_scores.player2}`
+    );
+    gameId = null;
+  }
+
+  // --- مدیریت خطاها ---
+  socket.onerror = (error) => {
+    showMessage(`خطا در اتصال: ${error.message}`);
+  };
+
+  socket.onclose = () => {
+    showMessage('اتصال قطع شد!');
+  };
+</script>
+</body>
+</html>
