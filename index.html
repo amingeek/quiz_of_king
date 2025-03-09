@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>بازی کوئیز</title>
+  <link rel="icon" href="data:,">
   <style>
     body { font-family: Arial, sans-serif; direction: rtl; padding: 20px; }
     .hidden { display: none; }
@@ -49,7 +50,6 @@
   // اتصال به WebSocket
   function connectWebSocket() {
     ws = new WebSocket('ws://localhost:8081');
-
     ws.onopen = () => console.log('اتصال به WebSocket برقرار شد');
     ws.onmessage = (event) => handleServerMessage(JSON.parse(event.data));
     ws.onerror = (error) => console.error('خطا در WebSocket:', error);
@@ -61,14 +61,20 @@
     const username = document.getElementById('username').value;
     const password = document.getElementById('password').value;
 
-    fetch('http://localhost:8081', {
+    fetch('http://localhost:8000/api.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'register', username, password })
     })
-            .then(response => response.json())
+            .then(response => {
+              if (!response.ok) throw new Error('سرور در دسترس نیست');
+              return response.json();
+            })
             .then(data => {
               document.getElementById('auth-message').innerText = data.error || data.status;
+            })
+            .catch(error => {
+              document.getElementById('auth-message').innerText = error.message;
             });
   }
 
@@ -77,12 +83,15 @@
     const username = document.getElementById('username').value;
     const password = document.getElementById('password').value;
 
-    fetch('http://localhost:8081', {
+    fetch('http://localhost:8000/api.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'login', username, password })
     })
-            .then(response => response.json())
+            .then(response => {
+              if (!response.ok) throw new Error('سرور در دسترس نیست');
+              return response.json();
+            })
             .then(data => {
               if (data.token) {
                 token = data.token;
@@ -92,6 +101,9 @@
               } else {
                 document.getElementById('auth-message').innerText = data.error;
               }
+            })
+            .catch(error => {
+              document.getElementById('auth-message').innerText = error.message;
             });
   }
 
@@ -123,7 +135,7 @@
         break;
       case 'game_result':
         document.getElementById('result-message').innerText =
-                `امتیازات: بازیکن 1: ${data.scores[data.scores.keys().next().value]}, بازیکن 2: ${data.scores[Object.keys(data.scores)[1]]} | مرحله بعدی: ${data.next_stage}`;
+                `امتیازات: بازیکن 1: ${data.scores[Object.keys(data.scores)[0]]}, بازیکن 2: ${data.scores[Object.keys(data.scores)[1]]} | مرحله بعدی: ${data.next_stage}`;
         document.getElementById('result-container').classList.remove('hidden');
         break;
       case 'game_over':
