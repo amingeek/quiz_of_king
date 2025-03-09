@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="UTF-8">
+  <title>بازی کوئیز</title>
+  <style>
+    body { font-family: Arial, sans-serif; direction: rtl; padding: 20px; }
+    .hidden { display: none; }
+    button { padding: 10px; margin: 5px; }
+    #question-container, #result-container { margin-top: 20px; }
+  </style>
+</head>
+<body>
+<!-- فرم ثبت‌نام و ورود -->
+<div id="auth-container">
+  <h2>ثبت‌نام / ورود</h2>
+  <input type="text" id="username" placeholder="نام کاربری">
+  <input type="password" id="password" placeholder="رمز عبور">
+  <button onclick="register()">ثبت‌نام</button>
+  <button onclick="login()">ورود</button>
+  <p id="auth-message"></p>
+</div>
+
+<!-- دکمه ورود به صف -->
+<div id="queue-container" class="hidden">
+  <button onclick="joinQueue()">ورود به صف بازی</button>
+  <p id="queue-message"></p>
+</div>
+
+<!-- نمایش سوال و گزینه‌ها -->
+<div id="question-container" class="hidden">
+  <h3 id="question-text"></h3>
+  <button onclick="submitAnswer('option1')">گزینه 1: <span id="option1"></span></button>
+  <button onclick="submitAnswer('option2')">گزینه 2: <span id="option2"></span></button>
+  <button onclick="submitAnswer('option3')">گزینه 3: <span id="option3"></span></button>
+  <button onclick="submitAnswer('option4')">گزینه 4: <span id="option4"></span></button>
+</div>
+
+<!-- نمایش نتایج -->
+<div id="result-container" class="hidden">
+  <p id="result-message"></p>
+</div>
+
+<script>
+  let token = null;
+  let gameId = null;
+  let ws = null;
+
+  // اتصال به WebSocket
+  function connectWebSocket() {
+    ws = new WebSocket('ws://localhost:8081');
+
+    ws.onopen = () => console.log('اتصال به WebSocket برقرار شد');
+    ws.onmessage = (event) => handleServerMessage(JSON.parse(event.data));
+    ws.onerror = (error) => console.error('خطا در WebSocket:', error);
+    ws.onclose = () => console.log('اتصال WebSocket بسته شد');
+  }
+
+  // ثبت‌نام
+  function register() {
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+
+    fetch('http://localhost:8081', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'register', username, password })
+    })
+            .then(response => response.json())
+            .then(data => {
+              document.getElementById('auth-message').innerText = data.error || data.status;
+            });
+  }
+
+  // ورود
+  function login() {
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+
+    fetch('http://localhost:8081', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'login', username, password })
+    })
+            .then(response => response.json())
+            .then(data => {
+              if (data.token) {
+                token = data.token;
+                document.getElementById('auth-container').classList.add('hidden');
+                document.getElementById('queue-container').classList.remove('hidden');
+                connectWebSocket();
+              } else {
+                document.getElementById('auth-message').innerText = data.error;
+              }
+            });
+  }
+
+  // ورود به صف
+  function joinQueue() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      alert('لطفاً ابتدا وارد شوید و اتصال برقرار کنید!');
+      return;
+    }
+    ws.send(JSON.stringify({ action: 'join_queue', token }));
+  }
+
+  // ارسال پاسخ
+  function submitAnswer(option) {
+    const answer = document.getElementById(option).innerText;
+    ws.send(JSON.stringify({ action: 'answer_question', game_id: gameId, answer, token }));
+  }
+
+  // مدیریت پیام‌های سرور
+  function handleServerMessage(data) {
+    console.log('پیام از سرور:', data);
+    switch (data.action) {
+      case 'start_game':
+        gameId = data.game_id;
+        showQuestion(data.question);
+        break;
+      case 'next_question':
+        showQuestion(data.question);
+        break;
+      case 'game_result':
+        document.getElementById('result-message').innerText =
+                `امتیازات: بازیکن 1: ${data.scores[data.scores.keys().next().value]}, بازیکن 2: ${data.scores[Object.keys(data.scores)[1]]} | مرحله بعدی: ${data.next_stage}`;
+        document.getElementById('result-container').classList.remove('hidden');
+        break;
+      case 'game_over':
+        document.getElementById('result-message').innerText = data.message ||
+                `بازی تمام شد! امتیازات نهایی: ${JSON.stringify(data.final_scores)}`;
+        document.getElementById('question-container').classList.add('hidden');
+        document.getElementById('result-container').classList.remove('hidden');
+        break;
+      case 'game_error':
+        document.getElementById('result-message').innerText = data.message;
+        document.getElementById('result-container').classList.remove('hidden');
+        break;
+      default:
+        document.getElementById('queue-message').innerText = data.status || data.error || 'در حال انتظار...';
+    }
+  }
+
+  // نمایش سوال
+  function showQuestion(question) {
+    document.getElementById('queue-container').classList.add('hidden');
+    document.getElementById('question-container').classList.remove('hidden');
+    document.getElementById('result-container').classList.add('hidden');
+    document.getElementById('question-text').innerText = question.question;
+    document.getElementById('option1').innerText = question.option1;
+    document.getElementById('option2').innerText = question.option2;
+    document.getElementById('option3').innerText = question.option3;
+    document.getElementById('option4').innerText = question.option4;
+  }
+</script>
+</body>
+</html>

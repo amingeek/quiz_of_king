@@ -36,44 +36,8 @@ $db->exec("CREATE TABLE IF NOT EXISTS questions (
     stage INTEGER
 )");
 
-$redis = new Client();
+$redis = new Client(['host' => '127.0.0.1', 'port' => 6379]);
 $jwtSecret = getenv('JWT_SECRET') ?: 'default_secret_key';
-
-function sendJsonResponse($data) {
-    header('Content-Type: application/json');
-    echo json_encode($data);
-    exit;
-}
-
-function registerUser($username, $password) {
-    global $db;
-    $hashed = password_hash($password, PASSWORD_DEFAULT);
-    $stmt = $db->prepare("INSERT INTO users (username, password) VALUES (:user, :pass)");
-    $stmt->bindValue(':user', $username, SQLITE3_TEXT);
-    $stmt->bindValue(':pass', $hashed, SQLITE3_TEXT);
-    try {
-        $stmt->execute();
-        return ['status' => 'success'];
-    } catch (Exception $e) {
-        return ['error' => 'Username already exists'];
-    }
-}
-
-function loginUser($username, $password) {
-    global $db, $jwtSecret;
-    $stmt = $db->prepare("SELECT * FROM users WHERE username = :user");
-    $stmt->bindValue(':user', $username, SQLITE3_TEXT);
-    $result = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
-
-    if ($result && password_verify($password, $result['password'])) {
-        $payload = [
-            'user_id' => $result['id'],
-            'exp' => time() + 3600
-        ];
-        return ['token' => JWT::encode($payload, $jwtSecret, 'HS256')];
-    }
-    return ['error' => 'Invalid credentials'];
-}
 
 class QuizWebSocket implements MessageComponentInterface {
     protected $clients;
@@ -88,14 +52,15 @@ class QuizWebSocket implements MessageComponentInterface {
 
     public function onOpen(ConnectionInterface $conn) {
         $this->clients->attach($conn);
+        echo "New connection: {$conn->resourceId}\n";
     }
 
     public function onMessage(ConnectionInterface $from, $msg) {
         global $redis, $db, $jwtSecret;
         $data = json_decode($msg, true);
 
-        // احراز هویت
-        if (in_array($data['action'], ['join_queue', 'answer_question'])) {
+        $authRequiredActions = ['join_queue', 'answer_question'];
+        if (in_array($data['action'], $authRequiredActions)) {
             try {
                 $decoded = JWT::decode($data['token'], new Key($jwtSecret, 'HS256'));
                 $playerId = $decoded->user_id;
@@ -113,11 +78,7 @@ class QuizWebSocket implements MessageComponentInterface {
                 break;
 
             case 'answer_question':
-                $this->handleAnswerQuestion(
-                    $playerId,
-                    $data['game_id'],
-                    $data['answer']
-                );
+                $this->handleAnswerQuestion($playerId, $data['game_id'], $data['answer']);
                 break;
         }
     }
@@ -134,10 +95,17 @@ class QuizWebSocket implements MessageComponentInterface {
             ];
 
             $question = $this->getRandomQuestion(1);
-            $this->sendToPlayers(
-                [$waiting, $playerId],
-                ['action' => 'start_game', 'game_id' => $gameId, 'question' => $question]
-            );
+            if ($question) {
+                $this->sendToPlayers(
+                    [$waiting, $playerId],
+                    ['action' => 'start_game', 'game_id' => $gameId, 'question' => $question]
+                );
+            } else {
+                $this->sendToPlayers(
+                    [$waiting, $playerId],
+                    ['action' => 'game_error', 'message' => 'No questions available for stage 1']
+                );
+            }
         } else {
             $redis->rpush('waiting_players', $playerId);
             $connection->send(json_encode(['status' => 'waiting']));
@@ -147,44 +115,41 @@ class QuizWebSocket implements MessageComponentInterface {
     private function handleAnswerQuestion($playerId, $gameId, $answer) {
         global $db;
 
-        $stmt = $db->prepare("SELECT status FROM games WHERE id = :gameId");
-        $stmt->bindValue(':gameId', $gameId, SQLITE3_INTEGER);
-        $gameStatus = $stmt->execute()->fetchArray(SQLITE3_ASSOC)['status'];
-
-        if ($gameStatus !== 'active') {
-            $this->sendToPlayer($playerId, ['error' => 'Game ended']);
-            return;
-        }
-
-        $stmt = $db->prepare("UPDATE games SET
-            player1_answer = CASE WHEN player1 = :pid THEN :ans ELSE player1_answer END,
-            player2_answer = CASE WHEN player2 = :pid THEN :ans ELSE player2_answer END
-            WHERE id = :gameId");
-        $stmt->bindValue(':pid', $playerId, SQLITE3_INTEGER);
-        $stmt->bindValue(':ans', $answer, SQLITE3_TEXT);
-        $stmt->bindValue(':gameId', $gameId, SQLITE3_INTEGER);
-        $stmt->execute();
-
         $stmt = $db->prepare("SELECT * FROM games WHERE id = :gameId");
         $stmt->bindValue(':gameId', $gameId, SQLITE3_INTEGER);
         $game = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
 
-        if ($game['player1_answer'] && $game['player2_answer']) {
+        if (!$game || $game['status'] !== 'active') {
+            $this->sendToPlayer($playerId, ['error' => 'Game not active']);
+            return;
+        }
+
+        $isPlayer1 = $game['player1'] == $playerId;
+        $answerColumn = $isPlayer1 ? 'player1_answer' : 'player2_answer';
+
+        $stmt = $db->prepare("UPDATE games SET $answerColumn = :ans WHERE id = :gameId");
+        $stmt->bindValue(':ans', $answer, SQLITE3_TEXT);
+        $stmt->bindValue(':gameId', $gameId, SQLITE3_INTEGER);
+        $stmt->execute();
+
+        $stmt = $db->prepare("SELECT player1_answer, player2_answer FROM games WHERE id = :gameId");
+        $stmt->bindValue(':gameId', $gameId, SQLITE3_INTEGER);
+        $answers = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+
+        if ($answers['player1_answer'] && $answers['player2_answer']) {
             $correct = $this->getCorrectAnswer($game['question_id']);
             $scores = [
-                $game['player1'] => ($game['player1_answer'] === $correct) ? 1 : 0,
-                $game['player2'] => ($game['player2_answer'] === $correct) ? 1 : 0
+                $game['player1'] => ($answers['player1_answer'] === $correct) ? 1 : 0,
+                $game['player2'] => ($answers['player2_answer'] === $correct) ? 1 : 0
             ];
 
             $nextStage = $game['current_stage'] + 1;
 
-            // به‌روزرسانی مرحله
             $stmt = $db->prepare("UPDATE games SET current_stage = :stage WHERE id = :gameId");
             $stmt->bindValue(':stage', $nextStage, SQLITE3_INTEGER);
             $stmt->bindValue(':gameId', $gameId, SQLITE3_INTEGER);
             $stmt->execute();
 
-            // ارسال نتیجه
             $this->sendToPlayers(
                 [$game['player1'], $game['player2']],
                 ['action' => 'game_result', 'scores' => $scores, 'next_stage' => $nextStage]
@@ -199,6 +164,11 @@ class QuizWebSocket implements MessageComponentInterface {
             } else {
                 $question = $this->getRandomQuestion($nextStage);
                 if ($question) {
+                    $stmt = $db->prepare("UPDATE games SET question_id = :qid WHERE id = :gameId");
+                    $stmt->bindValue(':qid', $question['id'], SQLITE3_INTEGER);
+                    $stmt->bindValue(':gameId', $gameId, SQLITE3_INTEGER);
+                    $stmt->execute();
+
                     $this->sendToPlayers(
                         [$game['player1'], $game['player2']],
                         ['action' => 'next_question', 'question' => $question]
@@ -206,13 +176,53 @@ class QuizWebSocket implements MessageComponentInterface {
                 } else {
                     $this->sendToPlayers(
                         [$game['player1'], $game['player2']],
-                        ['action' => 'game_over', 'error' => 'No more questions']
+                        ['action' => 'game_over', 'message' => 'No more questions for next stage']
                     );
+                    $db->exec("UPDATE games SET status = 'finished' WHERE id = $gameId");
                 }
             }
         }
     }
 
+    private function createGame($player1, $player2) {
+        global $db;
+        $question = $this->getRandomQuestion(1);
+        $stmt = $db->prepare("INSERT INTO games (player1, player2, question_id) VALUES (:p1, :p2, :qid)");
+        $stmt->bindValue(':p1', $player1, SQLITE3_INTEGER);
+        $stmt->bindValue(':p2', $player2, SQLITE3_INTEGER);
+        $stmt->bindValue(':qid', $question ? $question['id'] : null, SQLITE3_INTEGER);
+        $stmt->execute();
+        return $db->lastInsertRowID();
+    }
+
+    private function getRandomQuestion($stage) {
+        global $db;
+        $stmt = $db->prepare("SELECT * FROM questions WHERE stage = :stage ORDER BY RANDOM() LIMIT 1");
+        $stmt->bindValue(':stage', $stage, SQLITE3_INTEGER);
+        $result = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        return $result ?: null;
+    }
+
+    private function getCorrectAnswer($questionId) {
+        global $db;
+        $stmt = $db->prepare("SELECT correct FROM questions WHERE id = :qid");
+        $stmt->bindValue(':qid', $questionId, SQLITE3_INTEGER);
+        return $stmt->execute()->fetchArray(SQLITE3_ASSOC)['correct'];
+    }
+
+    private function sendToPlayers($playerIds, $message) {
+        foreach ($playerIds as $playerId) {
+            if (isset($this->playerConnections[$playerId])) {
+                $this->playerConnections[$playerId]->send(json_encode($message));
+            }
+        }
+    }
+
+    private function sendToPlayer($playerId, $message) {
+        if (isset($this->playerConnections[$playerId])) {
+            $this->playerConnections[$playerId]->send(json_encode($message));
+        }
+    }
 
     public function onClose(ConnectionInterface $conn) {
         $this->clients->detach($conn);
@@ -226,38 +236,27 @@ class QuizWebSocket implements MessageComponentInterface {
     }
 
     private function handleDisconnectedPlayer($playerId) {
-        global $redis;
+        global $redis, $db;
         $redis->lrem('waiting_players', 0, $playerId);
+
+        $stmt = $db->prepare("SELECT * FROM games WHERE (player1 = :pid OR player2 = :pid) AND status = 'active'");
+        $stmt->bindValue(':pid', $playerId, SQLITE3_INTEGER);
+        $game = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+
+        if ($game) {
+            $otherPlayer = ($game['player1'] == $playerId) ? $game['player2'] : $game['player1'];
+            $this->sendToPlayer($otherPlayer, ['action' => 'game_over', 'message' => 'Opponent disconnected']);
+            $db->exec("UPDATE games SET status = 'finished' WHERE id = {$game['id']}");
+        }
     }
 
     public function onError(ConnectionInterface $conn, \Exception $e) {
+        echo "An error occurred: {$e->getMessage()}\n";
         $conn->close();
     }
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $request = json_decode(file_get_contents('php://input'), true);
-
-    switch ($request['action'] ?? '') {
-        case 'register':
-            if (empty($request['username']) || empty($request['password'])) {
-                sendJsonResponse(['error' => 'Missing fields']);
-            }
-            sendJsonResponse(registerUser($request['username'], $request['password']));
-            break;
-
-        case 'login':
-            if (empty($request['username']) || empty($request['password'])) {
-                sendJsonResponse(['error' => 'Missing fields']);
-            }
-            sendJsonResponse(loginUser($request['username'], $request['password']));
-            break;
-
-        default:
-            sendJsonResponse(['error' => 'Invalid action']);
-    }
-}
-
+// اجرای سرور WebSocket
 $server = Ratchet\Server\IoServer::factory(
     new Ratchet\WebSocket\WsServer(new QuizWebSocket()),
     8081
