@@ -9,6 +9,7 @@
     .hidden { display: none; }
     button { padding: 10px; margin: 5px; }
     #question-container, #result-container { margin-top: 20px; }
+    button:disabled { background-color: #ccc; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -31,10 +32,10 @@
 <!-- نمایش سوال و گزینه‌ها -->
 <div id="question-container" class="hidden">
   <h3 id="question-text"></h3>
-  <button onclick="submitAnswer('option1')">گزینه 1: <span id="option1"></span></button>
-  <button onclick="submitAnswer('option2')">گزینه 2: <span id="option2"></span></button>
-  <button onclick="submitAnswer('option3')">گزینه 3: <span id="option3"></span></button>
-  <button onclick="submitAnswer('option4')">گزینه 4: <span id="option4"></span></button>
+  <button id="btn-option1" onclick="submitAnswer('option1')">گزینه 1: <span id="option1"></span></button>
+  <button id="btn-option2" onclick="submitAnswer('option2')">گزینه 2: <span id="option2"></span></button>
+  <button id="btn-option3" onclick="submitAnswer('option3')">گزینه 3: <span id="option3"></span></button>
+  <button id="btn-option4" onclick="submitAnswer('option4')">گزینه 4: <span id="option4"></span></button>
 </div>
 
 <!-- نمایش نتایج -->
@@ -46,6 +47,7 @@
   let token = null;
   let gameId = null;
   let ws = null;
+  let answered = false; // برای محدود کردن پاسخ
 
   // اتصال به WebSocket
   function connectWebSocket() {
@@ -118,8 +120,20 @@
 
   // ارسال پاسخ
   function submitAnswer(option) {
+    if (answered) {
+      alert('شما قبلاً پاسخ داده‌اید!');
+      return;
+    }
+
     const answer = document.getElementById(option).innerText;
     ws.send(JSON.stringify({ action: 'answer_question', game_id: gameId, answer, token }));
+
+    // غیرفعال کردن همه دکمه‌ها
+    answered = true;
+    document.getElementById('btn-option1').disabled = true;
+    document.getElementById('btn-option2').disabled = true;
+    document.getElementById('btn-option3').disabled = true;
+    document.getElementById('btn-option4').disabled = true;
   }
 
   // مدیریت پیام‌های سرور
@@ -128,25 +142,13 @@
     switch (data.action) {
       case 'start_game':
         gameId = data.game_id;
+        answered = false; // ریست کردن وضعیت پاسخ برای بازی جدید
         showQuestion(data.question);
-        break;
-      case 'next_question':
-        showQuestion(data.question);
-        break;
-      case 'game_result':
-        document.getElementById('result-message').innerText =
-                `امتیازات: بازیکن 1: ${data.scores[Object.keys(data.scores)[0]]}, بازیکن 2: ${data.scores[Object.keys(data.scores)[1]]} | مرحله بعدی: ${data.next_stage}`;
-        document.getElementById('result-container').classList.remove('hidden');
         break;
       case 'game_over':
-        document.getElementById('result-message').innerText = data.message ||
-                `بازی تمام شد! امتیازات نهایی: ${JSON.stringify(data.final_scores)}`;
         document.getElementById('question-container').classList.add('hidden');
         document.getElementById('result-container').classList.remove('hidden');
-        break;
-      case 'game_error':
         document.getElementById('result-message').innerText = data.message;
-        document.getElementById('result-container').classList.remove('hidden');
         break;
       default:
         document.getElementById('queue-message').innerText = data.status || data.error || 'در حال انتظار...';
@@ -163,6 +165,12 @@
     document.getElementById('option2').innerText = question.option2;
     document.getElementById('option3').innerText = question.option3;
     document.getElementById('option4').innerText = question.option4;
+
+    // فعال کردن دوباره دکمه‌ها برای سوال جدید
+    document.getElementById('btn-option1').disabled = false;
+    document.getElementById('btn-option2').disabled = false;
+    document.getElementById('btn-option3').disabled = false;
+    document.getElementById('btn-option4').disabled = false;
   }
 </script>
 </body>
