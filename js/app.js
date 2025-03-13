@@ -3,15 +3,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const apiEndpoint = 'http://193.228.168.186/api.php';
     const wsEndpoint = 'ws://193.228.168.186:8081';
 
-    // Elements
     const registerForm = document.getElementById('register-form');
     const loginForm = document.getElementById('login-form');
     const joinQueueBtn = document.getElementById('join-queue-btn');
     const gameStatus = document.getElementById('game-status');
     const questionContainer = document.getElementById('question-container');
-    const sendMessageBtn = document.getElementById('send-message-btn'); // دکمه ارسال پیام
+    const sendMessageBtn = document.getElementById('send-message-btn');
 
-    // Sections
     const sections = {
         register: document.getElementById('register-section'),
         login: document.getElementById('login-section'),
@@ -20,7 +18,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let ws;
 
-    // Register Form
     registerForm?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const username = document.getElementById('register-username').value;
@@ -55,7 +52,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Login Form
     loginForm?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const username = document.getElementById('login-username').value;
@@ -66,11 +62,19 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const payload = {
+            action: 'login',
+            username: username,
+            password: password
+        };
+
         try {
             const response = await fetch(apiEndpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'login', username, password })
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
             });
 
             const data = await response.json();
@@ -86,7 +90,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Join Queue
     joinQueueBtn?.addEventListener('click', () => {
         const token = localStorage.getItem('jwt_token');
         if (!token) {
@@ -100,8 +103,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Send Chat Message
-// دکمه ارسال پیام
     sendMessageBtn?.addEventListener('click', () => {
         const message = document.getElementById('chat-message').value;
         const token = localStorage.getItem('jwt_token');
@@ -112,19 +113,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (ws?.readyState === WebSocket.OPEN && currentGameId) {
-            ws.send(JSON.stringify({
+            const payload = {
                 action: 'send_message',
-                game_id: currentGameId, // شناسه بازی فعلی
+                game_id: currentGameId,
                 message: message,
                 token: token
-            }));
-            document.getElementById('chat-message').value = ''; // پاک کردن ورودی
+            };
+
+            ws.send(JSON.stringify(payload));
+            document.getElementById('chat-message').value = '';
         } else {
             showError('game-error', 'اتصال به سرور برقرار نیست یا بازی شروع نشده');
         }
     });
 
-    // WebSocket Management
     function initWebSocket(token) {
         ws = new WebSocket(wsEndpoint);
         window.ws = ws;
@@ -153,11 +155,20 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // Handle WebSocket Messages
     function handleSocketMessage(data) {
         switch (data.type) {
             case 'status':
                 gameStatus.textContent = data.message;
+                break;
+
+            case 'players_matched':
+                const playersInfo = document.getElementById('players-info');
+                playersInfo.style.display = 'block';
+                document.getElementById('player1-username').textContent = data.players.player1.username;
+                document.getElementById('player1-picture').src = `http://193.228.168.186/uploads/${data.players.player1.profile_picture}`;
+                document.getElementById('player2-username').textContent = data.players.player2.username;
+                document.getElementById('player2-picture').src = `http://193.228.168.186/uploads/${data.players.player2.profile_picture}`;
+                gameStatus.textContent = 'حریف پیدا شد! آماده بازی...';
                 break;
 
             case 'game_start':
@@ -168,19 +179,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
             case 'game_result':
                 gameStatus.innerHTML = `
-                <h3>${data.message}</h3>
-                ${data.winner_id ? `<p>امتیاز شما: +20</p>` : ''}
-                <button onclick="location.reload()">بازی مجدد</button>
-            `;
+                    <h3>${data.message}</h3>
+                    ${data.winner_id ? `<p>امتیاز شما: +20</p>` : ''}
+                    <button onclick="location.reload()">بازی مجدد</button>
+                `;
                 questionContainer.innerHTML = '';
+                document.getElementById('players-info').style.display = 'none';
                 break;
 
             case 'chat_message':
                 const chatMessages = document.getElementById('chat-messages');
                 const messageElement = document.createElement('p');
-                messageElement.textContent = `از ${data.from_username}: ${data.message}`; // نمایش نام کاربری
+                messageElement.textContent = `از ${data.from_username}: ${data.message}`;
                 chatMessages.appendChild(messageElement);
-                chatMessages.scrollTop = chatMessages.scrollHeight; // اسکرول به پایین
+                chatMessages.scrollTop = chatMessages.scrollHeight;
                 break;
 
             case 'error':
@@ -191,7 +203,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.warn('Unknown message type:', data);
         }
     }
-    // Render Question
+
     function renderQuestion(question) {
         questionContainer.innerHTML = `
             <h3>${question.question}</h3>
@@ -208,13 +220,11 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
-    // Show/Hide Sections
     function showSection(section) {
         Object.values(sections).forEach(el => el.style.display = 'none');
         if (sections[section]) sections[section].style.display = 'block';
     }
 
-    // Error Handling
     function showError(elementId, message) {
         const errorElement = document.getElementById(elementId);
         errorElement.textContent = message;
@@ -223,18 +233,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Global Answer Handler
 window.handleAnswer = (answer) => {
     const ws = window.ws;
     const token = localStorage.getItem('jwt_token');
 
     if (ws?.readyState === WebSocket.OPEN && token && currentGameId) {
-        ws.send(JSON.stringify({
+        const payload = {
             action: 'answer_question',
             game_id: currentGameId,
             answer: answer,
             token: token
-        }));
+        };
+
+        ws.send(JSON.stringify(payload));
     } else {
         console.error('WebSocket not open, token missing, or game_id not set');
     }

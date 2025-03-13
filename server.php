@@ -83,15 +83,13 @@ class QuizWebSocket implements MessageComponentInterface {
     }
 
     private function handleSendMessage($from, $data) {
-        // چک کردن اینکه داده‌های لازم رو داریم
         if (!isset($data['game_id']) || !isset($data['message'])) {
             throw new Exception('داده‌های ناقص برای ارسال پیام');
         }
 
-        $gameId = $data['game_id']; // شناسه بازی
-        $message = htmlspecialchars($data['message'], ENT_QUOTES, 'UTF-8'); // پیام امن‌شده
+        $gameId = $data['game_id'];
+        $message = htmlspecialchars($data['message'], ENT_QUOTES, 'UTF-8');
 
-        // گرفتن اطلاعات بازی از Redis
         $gameKey = "game:{$gameId}";
         $gameData = $this->redis->hgetall($gameKey);
 
@@ -99,81 +97,98 @@ class QuizWebSocket implements MessageComponentInterface {
             throw new Exception('بازی یافت نشد');
         }
 
-        // شناسه بازیکن‌ها
         $player1Id = $gameData['player1'];
         $player2Id = $gameData['player2'];
-
-        // شناسه کاربری که پیام رو فرستاده
         $fromUserId = $this->userConnections[$from];
 
-        // ارسال پیام به هر دو بازیکن
+        $stmt = $this->db->prepare("SELECT username FROM users WHERE id = :id");
+        $stmt->bindValue(':id', $fromUserId, SQLITE3_INTEGER);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        $fromUsername = $row['username'] ?? 'Unknown';
+
         foreach ([$player1Id, $player2Id] as $playerId) {
             if ($conn = $this->findConnectionById($playerId)) {
                 $conn->send(json_encode([
                     'type' => 'chat_message',
-                    'from_user_id' => $fromUserId,
+                    'from_username' => $fromUsername,
                     'message' => $message
                 ]));
             }
         }
     }
+
     public function onClose(ConnectionInterface $conn) {
         $this->clients->detach($conn);
         $this->userConnections->detach($conn);
         $this->redis->lrem('queue', 0, $conn->resourceId);
-        $this->redis->hdel('connections', $conn->resourceId); // پاک کردن از redis
+        $this->redis->hdel('connections', $conn->resourceId);
         echo "Connection closed: {$conn->resourceId}\n";
     }
-    private function getUserInfo($userId) {
-        $stmt = $this->db->prepare("SELECT username, profile_picture FROM users WHERE id = :id");
-        $stmt->bindValue(':id', $userId, SQLITE3_INTEGER);
-        $result = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
-        return $result ?: ['username' => 'Unknown', 'profile_picture' => 'default.jpg'];
-    }
+
     private function initializeDatabase() {
         $this->db->exec("
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            profile_picture TEXT,  
-            score INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ");
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                profile_picture TEXT,
+                score INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ");
 
         $this->db->exec("
-        CREATE TABLE IF NOT EXISTS questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            question TEXT NOT NULL,
-            option1 TEXT NOT NULL,
-            option2 TEXT NOT NULL,
-            option3 TEXT NOT NULL,
-            option4 TEXT NOT NULL,
-            correct_answer TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ");
+            CREATE TABLE IF NOT EXISTS questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question TEXT NOT NULL,
+                option1 TEXT NOT NULL,
+                option2 TEXT NOT NULL,
+                option3 TEXT NOT NULL,
+                option4 TEXT NOT NULL,
+                correct_answer TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ");
 
         if ($this->db->querySingle("SELECT COUNT(*) FROM questions") == 0) {
             $this->db->exec("
-            INSERT INTO questions 
-            (question, option1, option2, option3, option4, correct_answer)
-            VALUES (
-                'پایتخت فرانسه کدام است؟',
-                'پاریس',
-                'لندن',
-                'برلین',
-                'مادرید',
-                'option1'
-            )
-        ");
+                INSERT INTO questions 
+                (question, option1, option2, option3, option4, correct_answer)
+                VALUES (
+                    'پایتخت فرانسه کدام است؟',
+                    'پاریس',
+                    'لندن',
+                    'برلین',
+                    'مادرید',
+                    'option1'
+                )
+            ");
         }
     }
+
     private function checkQueue() {
         while ($this->redis->llen('queue') >= 2) {
             $player1 = $this->redis->lpop('queue');
             $player2 = $this->redis->lpop('queue');
+
+            $player1Id = $this->redis->hget('user_map', $player1);
+            $player2Id = $this->redis->hget('user_map', $player2);
+            $player1Info = $this->getUserInfo($player1Id);
+            $player2Info = $this->getUserInfo($player2Id);
+
+            foreach ([$player1, $player2] as $playerId) {
+                if ($conn = $this->findConnectionById($playerId)) {
+                    $conn->send(json_encode([
+                        'type' => 'players_matched',
+                        'players' => [
+                            'player1' => $player1Info,
+                            'player2' => $player2Info
+                        ]
+                    ]));
+                }
+            }
+
             $this->startGame($player1, $player2);
         }
     }
@@ -186,7 +201,9 @@ class QuizWebSocket implements MessageComponentInterface {
             'player1' => $p1Id,
             'player2' => $p2Id,
             'question' => json_encode($question),
-            'answers' => json_encode([])
+            'answers' => json_encode([]),
+            'scores' => json_encode([$p1Id => 0, $p2Id => 0]), // امتیازات هر بازیکن
+            'round' => 1 // شماره مرحله
         ]);
 
         foreach ([$p1Id, $p2Id] as $playerId) {
@@ -194,7 +211,8 @@ class QuizWebSocket implements MessageComponentInterface {
                 $conn->send(json_encode([
                     'type' => 'game_start',
                     'game_id' => $gameId,
-                    'question' => $question
+                    'question' => $question,
+                    'round' => 1 // مرحله اول
                 ]));
             }
         }
@@ -214,11 +232,11 @@ class QuizWebSocket implements MessageComponentInterface {
         }));
 
         if ($answerCount === 2) {
-            $this->endGame($gameKey, $answers);
+            $this->endRound($gameKey, $answers);
         }
     }
 
-    private function endGame($gameKey, $gameData) {
+    private function endRound($gameKey, $gameData) {
         $question = json_decode($gameData['question'], true);
         $player1Id = $this->redis->hget('user_map', $gameData['player1']);
         $player2Id = $this->redis->hget('user_map', $gameData['player2']);
@@ -226,27 +244,92 @@ class QuizWebSocket implements MessageComponentInterface {
         $answer1 = $gameData["answer:{$player1Id}"] ?? null;
         $answer2 = $gameData["answer:{$player2Id}"] ?? null;
 
-        $winnerId = null;
-        if ($answer1 === $question['correct_answer']) $winnerId = $player1Id;
-        if ($answer2 === $question['correct_answer']) $winnerId = $player2Id;
+        $correctAnswer = $question['correct_answer'];
 
-        if ($winnerId) {
-            $stmt = $this->db->prepare("UPDATE users SET score = score + 20 WHERE id = :id");
-            $stmt->bindValue(':id', $winnerId, SQLITE3_INTEGER);
-            $stmt->execute();
+        // بررسی پاسخ‌ها
+        $p1Correct = ($answer1 === $correctAnswer);
+        $p2Correct = ($answer2 === $correctAnswer);
+
+        // به‌روزرسانی امتیازات
+        $scores = json_decode($gameData['scores'], true);
+        if ($p1Correct) $scores[$player1Id]++;
+        if ($p2Correct) $scores[$player2Id]++;
+        $this->redis->hset($gameKey, 'scores', json_encode($scores));
+
+        // ارسال نتیجه مرحله
+        foreach ([$gameData['player1'], $gameData['player2']] as $connId) {
+            if ($conn = $this->findConnectionById($connId)) {
+                $conn->send(json_encode([
+                    'type' => 'round_result',
+                    'round' => $gameData['round'],
+                    'scores' => $scores,
+                    'message' => $p1Correct ? 'شما پاسخ صحیح دادید!' : 'شما پاسخ اشتباه دادید!'
+                ]));
+            }
         }
 
+        // بررسی پایان بازی
+        if ($gameData['round'] >= 5) {
+            $this->endGame($gameKey, $gameData);
+        } else {
+            // شروع مرحله بعدی
+            $this->redis->hincrby($gameKey, 'round', 1);
+            $newQuestion = $this->getRandomQuestion();
+            $this->redis->hset($gameKey, 'question', json_encode($newQuestion));
+            $this->redis->hset($gameKey, 'answers', json_encode([]));
+
+            foreach ([$gameData['player1'], $gameData['player2']] as $connId) {
+                if ($conn = $this->findConnectionById($connId)) {
+                    $conn->send(json_encode([
+                        'type' => 'next_round',
+                        'round' => $gameData['round'] + 1,
+                        'question' => $newQuestion
+                    ]));
+                }
+            }
+        }
+    }
+
+    private function endGame($gameKey, $gameData) {
+        $scores = json_decode($gameData['scores'], true);
+        $player1Id = $this->redis->hget('user_map', $gameData['player1']);
+        $player2Id = $this->redis->hget('user_map', $gameData['player2']);
+
+        $p1Score = $scores[$player1Id] ?? 0;
+        $p2Score = $scores[$player2Id] ?? 0;
+
+        $resultMessage = '';
+        if ($p1Score > $p2Score) {
+            $resultMessage = "{$this->getUserInfo($player1Id)['username']} برنده شد! 🎉";
+            $this->updateScore($player1Id, 20);
+        } elseif ($p2Score > $p1Score) {
+            $resultMessage = "{$this->getUserInfo($player2Id)['username']} برنده شد! 🎉";
+            $this->updateScore($player2Id, 20);
+        } else {
+            $resultMessage = "مساوی! 🤷";
+            $this->updateScore($player1Id, 10);
+            $this->updateScore($player2Id, 10);
+        }
+
+        // ارسال نتیجه نهایی
         foreach ([$gameData['player1'], $gameData['player2']] as $connId) {
             if ($conn = $this->findConnectionById($connId)) {
                 $conn->send(json_encode([
                     'type' => 'game_result',
-                    'winner_id' => $winnerId,
-                    'message' => $winnerId ? "🎉 برنده شدید!" : "مساوی!"
+                    'message' => $resultMessage,
+                    'scores' => $scores
                 ]));
             }
         }
 
         $this->redis->del($gameKey);
+    }
+
+    private function updateScore($userId, $score) {
+        $stmt = $this->db->prepare("UPDATE users SET score = score + :score WHERE id = :id");
+        $stmt->bindValue(':score', $score, SQLITE3_INTEGER);
+        $stmt->bindValue(':id', $userId, SQLITE3_INTEGER);
+        $stmt->execute();
     }
 
     private function validateToken(string $token): array {
@@ -269,6 +352,13 @@ class QuizWebSocket implements MessageComponentInterface {
             'option4' => 'گزینه ۴',
             'correct_answer' => 'option1'
         ];
+    }
+
+    private function getUserInfo($userId) {
+        $stmt = $this->db->prepare("SELECT username, profile_picture FROM users WHERE id = :id");
+        $stmt->bindValue(':id', $userId, SQLITE3_INTEGER);
+        $result = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        return $result ?: ['username' => 'Unknown', 'profile_picture' => 'default.jpg'];
     }
 
     private function findConnectionById($resourceId) {

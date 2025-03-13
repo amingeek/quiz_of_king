@@ -6,7 +6,6 @@
   <title>Quiz Game</title>
   <link rel="stylesheet" href="/styles.css">
   <style>
-    /* General styles */
     body {
       font-family: Arial, sans-serif;
       background-color: #f4f4f9;
@@ -15,7 +14,7 @@
     }
 
     .container {
-      max-width: 400px;
+      max-width: 600px;
       margin: 50px auto;
       padding: 20px;
       background-color: #fff;
@@ -57,7 +56,7 @@
       background-color: #45a049;
     }
 
-    .error {
+    .error-message {
       color: red;
       font-size: 14px;
       display: none;
@@ -67,49 +66,67 @@
       margin-bottom: 20px;
     }
 
+    #players-info {
+      display: flex;
+      justify-content: space-around;
+      margin: 20px 0;
+    }
+
+    #players-info div {
+      text-align: center;
+    }
+
+    #chat-messages p {
+      margin: 5px 0;
+    }
   </style>
 </head>
 <body>
 <div class="container">
-  <!-- بخش ثبت‌نام -->
   <section id="register-section" class="auth-section">
     <h2>ثبت نام</h2>
-    <form id="register-form">
-      <input type="text" id="register-username" placeholder="نام کاربری">
-      <input type="password" id="register-password" placeholder="رمز عبور">
-      <input type="file" id="register-profile-picture" accept="image/*">
+    <form id="register-form" enctype="multipart/form-data">
+      <input type="text" id="register-username" name="username" placeholder="نام کاربری">
+      <input type="password" id="register-password" name="password" placeholder="رمز عبور">
+      <input type="file" id="register-profile-picture" name="profile_picture" accept="image/*">
       <button type="submit">ثبت نام</button>
     </form>
     <p id="register-error" class="error-message"></p>
   </section>
 
-  <!-- بخش ورود -->
   <section id="login-section" class="auth-section">
     <h2>ورود</h2>
     <form id="login-form">
-      <input type="text" id="login-username" placeholder="نام کاربری">
-      <input type="password" id="login-password" placeholder="رمز عبور">
+      <input type="text" id="login-username" name="username" placeholder="نام کاربری">
+      <input type="password" id="login-password" name="password" placeholder="رمز عبور">
       <button type="submit">ورود</button>
     </form>
     <p id="login-error" class="error-message"></p>
   </section>
 
-  <!-- بخش بازی -->
   <section id="game-section" style="display: none;">
     <h2>بازی</h2>
     <button id="join-queue-btn">شروع بازی</button>
+    <div id="players-info" style="display: none;">
+      <div id="player1-info">
+        <img id="player1-picture" src="" alt="Player 1" width="50">
+        <span id="player1-username"></span>
+      </div>
+      <div id="player2-info">
+        <img id="player2-picture" src="" alt="Player 2" width="50">
+        <span id="player2-username"></span>
+      </div>
+    </div>
     <div id="game-status"></div>
     <div id="question-container"></div>
     <p id="game-error" class="error-message"></p>
 
-    <!-- بخش چت -->
     <div id="chat-section">
       <h3>چت</h3>
       <div id="chat-messages" style="max-height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 10px;"></div>
       <input type="text" id="chat-message" placeholder="پیام">
       <button id="send-message-btn">ارسال</button>
     </div>
-
   </section>
 </div>
 <script src="js/app.js"></script>

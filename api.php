@@ -18,19 +18,21 @@ try {
         exit(0);
     }
 
-    // Get Input Data
-    $data = json_decode(file_get_contents('php://input'), true);
-    if (!$data || !isset($data['action'])) {
-        throw new Exception('درخواست نامعتبر');
+    // تشخیص نوع درخواست (JSON یا FormData)
+    $isJsonRequest = strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false;
+    $data = $isJsonRequest ? json_decode(file_get_contents('php://input'), true) : $_POST;
+
+    if ($isJsonRequest && json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('داده‌های JSON نامعتبر است');
     }
 
-    switch ($data['action']) {
+    switch ($data['action'] ?? '') {
         case 'register':
+            // ثبت نام از FormData استفاده می‌کند
             if (empty($_POST['username']) || empty($_POST['password']) || empty($_FILES['profile_picture'])) {
                 throw new Exception('تمام فیلدها الزامی است');
             }
 
-            // چک کردن وجود کاربر
             $stmt = $db->prepare("SELECT id FROM users WHERE username = :username");
             $stmt->bindValue(':username', $_POST['username']);
             $exists = $stmt->execute()->fetchArray();
@@ -39,7 +41,6 @@ try {
                 throw new Exception('نام کاربری قبلا ثبت شده است');
             }
 
-            // ذخیره فایل عکس
             $uploadDir = __DIR__ . '/uploads/';
             if (!file_exists($uploadDir)) {
                 mkdir($uploadDir, 0777, true);
@@ -47,15 +48,19 @@ try {
             $fileName = uniqid() . '-' . basename($_FILES['profile_picture']['name']);
             $uploadFile = $uploadDir . $fileName;
 
+            $allowedTypes = ['image/jpeg', 'image/png'];
+            if (!in_array($_FILES['profile_picture']['type'], $allowedTypes)) {
+                throw new Exception('فقط فایل‌های JPEG و PNG مجاز هستند');
+            }
+
             if (!move_uploaded_file($_FILES['profile_picture']['tmp_name'], $uploadFile)) {
                 throw new Exception('خطا در آپلود فایل');
             }
 
-            // ثبت کاربر جدید
             $stmt = $db->prepare("
-        INSERT INTO users (username, password, profile_picture) 
-        VALUES (:username, :password, :profile_picture)
-    ");
+                INSERT INTO users (username, password, profile_picture) 
+                VALUES (:username, :password, :profile_picture)
+            ");
 
             $hash = password_hash($_POST['password'], PASSWORD_DEFAULT);
             $stmt->bindValue(':username', $_POST['username']);
@@ -70,11 +75,11 @@ try {
             break;
 
         case 'login':
+            // لاگین از raw JSON استفاده می‌کند
             if (empty($data['username']) || empty($data['password'])) {
                 throw new Exception('نام کاربری و رمز عبور الزامی است');
             }
 
-            // Get User
             $stmt = $db->prepare("SELECT * FROM users WHERE username = :username");
             $stmt->bindValue(':username', $data['username']);
             $user = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
@@ -83,7 +88,6 @@ try {
                 throw new Exception('نام کاربری یا رمز عبور اشتباه است');
             }
 
-            // Generate JWT
             $payload = [
                 'sub' => $user['id'],
                 'username' => $user['username'],
