@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quiz Game</title>
+  <link rel="stylesheet" href="/styles.css"> <!-- مسیر فایل CSS را بررسی کنید -->
+</head>
+<body>
+<div class="container">
+  <!-- بخش ثبت‌نام -->
+  <section id="register-section" class="auth-section">
+    <h2>ثبت نام</h2>
+    <form id="register-form">
+      <input type="text" id="register-username" placeholder="نام کاربری">
+      <input type="password" id="register-password" placeholder="رمز عبور">
+      <button type="submit">ثبت نام</button>
+    </form>
+    <p id="register-error" class="error-message"></p>
+  </section>
+
+  <!-- بخش ورود -->
+  <section id="login-section" class="auth-section">
+    <h2>ورود</h2>
+    <form id="login-form">
+      <input type="text" id="login-username" placeholder="نام کاربری">
+      <input type="password" id="login-password" placeholder="رمز عبور">
+      <button type="submit">ورود</button>
+    </form>
+    <p id="login-error" class="error-message"></p>
+  </section>
+
+  <!-- بخش بازی -->
+  <section id="game-section" style="display: none;">
+    <h2>بازی</h2>
+    <button id="join-queue-btn">شروع بازی</button>
+    <div id="game-status"></div>
+    <div id="question-container"></div>
+  </section>
+</div>
+<script src="js/app.js"></script>
+</body>
+</html>

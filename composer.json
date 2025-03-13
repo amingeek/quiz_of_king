@@ -1,0 +1,8 @@
+{
+    "require": {
+        "firebase/php-jwt": "^6.11",
+        "predis/predis": "^2.3",
+        "cboden/ratchet": "^0.4.4",
+        "ratchet/pawl": "^0.4.2"
+    }
+}
