@@ -26,28 +26,41 @@ try {
 
     switch ($data['action']) {
         case 'register':
-            if (empty($data['username']) || empty($data['password'])) {
-                throw new Exception('نام کاربری و رمز عبور الزامی است');
+            if (empty($_POST['username']) || empty($_POST['password']) || empty($_FILES['profile_picture'])) {
+                throw new Exception('تمام فیلدها الزامی است');
             }
 
-            // Check Existing User
+            // چک کردن وجود کاربر
             $stmt = $db->prepare("SELECT id FROM users WHERE username = :username");
-            $stmt->bindValue(':username', $data['username']);
+            $stmt->bindValue(':username', $_POST['username']);
             $exists = $stmt->execute()->fetchArray();
 
             if ($exists) {
                 throw new Exception('نام کاربری قبلا ثبت شده است');
             }
 
-            // Create New User
-            $stmt = $db->prepare("
-                INSERT INTO users (username, password) 
-                VALUES (:username, :password)
-            ");
+            // ذخیره فایل عکس
+            $uploadDir = __DIR__ . '/uploads/';
+            if (!file_exists($uploadDir)) {
+                mkdir($uploadDir, 0777, true);
+            }
+            $fileName = uniqid() . '-' . basename($_FILES['profile_picture']['name']);
+            $uploadFile = $uploadDir . $fileName;
 
-            $hash = password_hash($data['password'], PASSWORD_DEFAULT);
-            $stmt->bindValue(':username', $data['username']);
+            if (!move_uploaded_file($_FILES['profile_picture']['tmp_name'], $uploadFile)) {
+                throw new Exception('خطا در آپلود فایل');
+            }
+
+            // ثبت کاربر جدید
+            $stmt = $db->prepare("
+        INSERT INTO users (username, password, profile_picture) 
+        VALUES (:username, :password, :profile_picture)
+    ");
+
+            $hash = password_hash($_POST['password'], PASSWORD_DEFAULT);
+            $stmt->bindValue(':username', $_POST['username']);
             $stmt->bindValue(':password', $hash);
+            $stmt->bindValue(':profile_picture', $fileName);
 
             if ($stmt->execute()) {
                 echo json_encode(['status' => 'success']);
@@ -84,6 +97,7 @@ try {
         default:
             throw new Exception('عملیات نامعتبر');
     }
+
 } catch (Exception $e) {
     http_response_code(400);
     echo json_encode(['error' => $e->getMessage()]);

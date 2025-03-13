@@ -54,6 +54,7 @@ class QuizWebSocket implements MessageComponentInterface {
             switch ($data['action']) {
                 case 'auth':
                     $from->send(json_encode(['type' => 'status', 'message' => 'احراز هویت موفق']));
+                    $this->redis->hset('user_map', $from->resourceId, $userId);
                     break;
 
                 case 'join_queue':
@@ -82,90 +83,93 @@ class QuizWebSocket implements MessageComponentInterface {
     }
 
     private function handleSendMessage($from, $data) {
-        if (!isset($data['to_user_id']) || !isset($data['message'])) {
+        // چک کردن اینکه داده‌های لازم رو داریم
+        if (!isset($data['game_id']) || !isset($data['message'])) {
             throw new Exception('داده‌های ناقص برای ارسال پیام');
         }
 
-        $toUserId = $data['to_user_id'];
-        $message = $data['message'];
+        $gameId = $data['game_id']; // شناسه بازی
+        $message = htmlspecialchars($data['message'], ENT_QUOTES, 'UTF-8'); // پیام امن‌شده
 
-        $toConn = null;
-        foreach ($this->userConnections as $conn) {
-            if ($this->userConnections[$conn] === $toUserId) {
-                $toConn = $conn;
-                break;
+        // گرفتن اطلاعات بازی از Redis
+        $gameKey = "game:{$gameId}";
+        $gameData = $this->redis->hgetall($gameKey);
+
+        if (!$gameData) {
+            throw new Exception('بازی یافت نشد');
+        }
+
+        // شناسه بازیکن‌ها
+        $player1Id = $gameData['player1'];
+        $player2Id = $gameData['player2'];
+
+        // شناسه کاربری که پیام رو فرستاده
+        $fromUserId = $this->userConnections[$from];
+
+        // ارسال پیام به هر دو بازیکن
+        foreach ([$player1Id, $player2Id] as $playerId) {
+            if ($conn = $this->findConnectionById($playerId)) {
+                $conn->send(json_encode([
+                    'type' => 'chat_message',
+                    'from_user_id' => $fromUserId,
+                    'message' => $message
+                ]));
             }
         }
-
-        if ($toConn) {
-            $toConn->send(json_encode([
-                'type' => 'chat_message',
-                'from_user_id' => $this->userConnections[$from],
-                'message' => $message
-            ]));
-            $from->send(json_encode([
-                'type' => 'status',
-                'message' => 'پیام ارسال شد'
-            ]));
-        } else {
-            $from->send(json_encode([
-                'type' => 'error',
-                'message' => 'کاربر مقصد آنلاین نیست'
-            ]));
-        }
     }
-
     public function onClose(ConnectionInterface $conn) {
         $this->clients->detach($conn);
         $this->userConnections->detach($conn);
         $this->redis->lrem('queue', 0, $conn->resourceId);
+        $this->redis->hdel('connections', $conn->resourceId); // پاک کردن از redis
         echo "Connection closed: {$conn->resourceId}\n";
     }
-
-
+    private function getUserInfo($userId) {
+        $stmt = $this->db->prepare("SELECT username, profile_picture FROM users WHERE id = :id");
+        $stmt->bindValue(':id', $userId, SQLITE3_INTEGER);
+        $result = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        return $result ?: ['username' => 'Unknown', 'profile_picture' => 'default.jpg'];
+    }
     private function initializeDatabase() {
-        // Create Users Table
         $this->db->exec("
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                score INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ");
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            profile_picture TEXT,  
+            score INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ");
 
-        // Create Questions Table
         $this->db->exec("
-            CREATE TABLE IF NOT EXISTS questions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                question TEXT NOT NULL,
-                option1 TEXT NOT NULL,
-                option2 TEXT NOT NULL,
-                option3 TEXT NOT NULL,
-                option4 TEXT NOT NULL,
-                correct_answer TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ");
+        CREATE TABLE IF NOT EXISTS questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question TEXT NOT NULL,
+            option1 TEXT NOT NULL,
+            option2 TEXT NOT NULL,
+            option3 TEXT NOT NULL,
+            option4 TEXT NOT NULL,
+            correct_answer TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ");
 
-        // Insert Sample Question
         if ($this->db->querySingle("SELECT COUNT(*) FROM questions") == 0) {
             $this->db->exec("
-                INSERT INTO questions 
-                (question, option1, option2, option3, option4, correct_answer)
-                VALUES (
-                    'پایتخت فرانسه کدام است؟',
-                    'پاریس',
-                    'لندن',
-                    'برلین',
-                    'مادرید',
-                    'option1'
-                )
-            ");
+            INSERT INTO questions 
+            (question, option1, option2, option3, option4, correct_answer)
+            VALUES (
+                'پایتخت فرانسه کدام است؟',
+                'پاریس',
+                'لندن',
+                'برلین',
+                'مادرید',
+                'option1'
+            )
+        ");
         }
     }
-
     private function checkQueue() {
         while ($this->redis->llen('queue') >= 2) {
             $player1 = $this->redis->lpop('queue');
@@ -178,7 +182,6 @@ class QuizWebSocket implements MessageComponentInterface {
         $gameId = uniqid('game_');
         $question = $this->getRandomQuestion();
 
-        // Store Game Data
         $this->redis->hmset("game:$gameId", [
             'player1' => $p1Id,
             'player2' => $p2Id,
@@ -186,7 +189,6 @@ class QuizWebSocket implements MessageComponentInterface {
             'answers' => json_encode([])
         ]);
 
-        // Notify Players
         foreach ([$p1Id, $p2Id] as $playerId) {
             if ($conn = $this->findConnectionById($playerId)) {
                 $conn->send(json_encode([
@@ -204,51 +206,42 @@ class QuizWebSocket implements MessageComponentInterface {
         }
 
         $gameKey = "game:{$data['game_id']}";
-        $gameData = $this->redis->hgetall($gameKey);
-
-        if (empty($gameData)) {
-            throw new Exception('بازی یافت نشد');
-        }
-
-        // ذخیره پاسخ با شناسه کاربر
         $this->redis->hset($gameKey, "answer:{$userId}", $data['answer']);
+        $answers = $this->redis->hgetall($gameKey);
 
-        // بررسی آیا هر دو بازیکن پاسخ دادند
-        $answersCount = $this->redis->hlen($gameKey) - 3; // 3 فیلد پایه: player1, player2, question
-        if ($answersCount === 2) {
-            $this->endGame($gameKey, $gameData);
+        $answerCount = count(array_filter(array_keys($answers), function($key) {
+            return strpos($key, 'answer:') === 0;
+        }));
+
+        if ($answerCount === 2) {
+            $this->endGame($gameKey, $answers);
         }
     }
 
     private function endGame($gameKey, $gameData) {
         $question = json_decode($gameData['question'], true);
-        $player1 = $gameData['player1'];
-        $player2 = $gameData['player2'];
+        $player1Id = $this->redis->hget('user_map', $gameData['player1']);
+        $player2Id = $this->redis->hget('user_map', $gameData['player2']);
 
-        // دریافت پاسخ‌ها
-        $answer1 = $gameData["answer:{$player1}"] ?? null;
-        $answer2 = $gameData["answer:{$player2}"] ?? null;
+        $answer1 = $gameData["answer:{$player1Id}"] ?? null;
+        $answer2 = $gameData["answer:{$player2Id}"] ?? null;
 
-        // تعیین برنده
-        $winner = null;
-        if ($answer1 === $question['correct_answer']) $winner = $player1;
-        if ($answer2 === $question['correct_answer']) $winner = $player2;
+        $winnerId = null;
+        if ($answer1 === $question['correct_answer']) $winnerId = $player1Id;
+        if ($answer2 === $question['correct_answer']) $winnerId = $player2Id;
 
-        // آپدیت امتیاز در دیتابیس
-        if ($winner) {
-            $userId = $this->redis->hget('user_map', $winner);
+        if ($winnerId) {
             $stmt = $this->db->prepare("UPDATE users SET score = score + 20 WHERE id = :id");
-            $stmt->bindValue(':id', $userId, SQLITE3_INTEGER);
+            $stmt->bindValue(':id', $winnerId, SQLITE3_INTEGER);
             $stmt->execute();
         }
 
-        // ارسال نتایج به بازیکنان
-        foreach ([$player1, $player2] as $playerId) {
-            if ($conn = $this->findConnectionById($playerId)) {
+        foreach ([$gameData['player1'], $gameData['player2']] as $connId) {
+            if ($conn = $this->findConnectionById($connId)) {
                 $conn->send(json_encode([
                     'type' => 'game_result',
-                    'winner_id' => $winner ? $this->redis->hget('user_map', $winner) : null,
-                    'message' => $winner ? "🎉 برنده شدید!" : "مساوی!"
+                    'winner_id' => $winnerId,
+                    'message' => $winnerId ? "🎉 برنده شدید!" : "مساوی!"
                 ]));
             }
         }
@@ -263,7 +256,9 @@ class QuizWebSocket implements MessageComponentInterface {
         } catch (Exception $e) {
             throw new RuntimeException('Invalid token: ' . $e->getMessage());
         }
-    }    private function getRandomQuestion() {
+    }
+
+    private function getRandomQuestion() {
         $stmt = $this->db->prepare("SELECT * FROM questions ORDER BY RANDOM() LIMIT 1");
         $result = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
         return $result ?: [
@@ -284,7 +279,6 @@ class QuizWebSocket implements MessageComponentInterface {
         }
         return null;
     }
-
 
     public function onError(ConnectionInterface $conn, \Exception $e) {
         echo "Error: {$e->getMessage()}\n";
