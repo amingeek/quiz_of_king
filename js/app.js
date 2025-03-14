@@ -1,5 +1,6 @@
 let currentGameId;
 let currentRound = 1;
+let playerScores = {};
 
 document.addEventListener('DOMContentLoaded', () => {
     const apiEndpoint = 'http://193.228.168.186/api.php';
@@ -166,6 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             case 'answer_received':
                 gameStatus.textContent = data.message;
+                questionContainer.innerHTML = '<p>منتظر پاسخ حریف...</p>';
                 break;
 
             case 'players_matched':
@@ -180,12 +182,19 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'game_start':
                 currentGameId = data.game_id;
                 currentRound = 1;
+                playerScores = {};
                 renderQuestion(data.question);
                 gameStatus.textContent = 'بازی شروع شد! مرحله ۱ از ۵';
                 break;
 
             case 'round_result':
-                gameStatus.textContent = `مرحله ${data.round} از ۵ - ${data.message}`;
+                gameStatus.innerHTML = `
+                    مرحله ${data.round} از ۵<br>
+                    پاسخ شما: ${data.your_answer}<br>
+                    پاسخ صحیح: ${data.correct_answer}<br>
+                    امتیاز شما: ${data.your_score} - امتیاز حریف: ${data.opponent_score}<br>
+                    ${data.message}
+                `;
                 break;
 
             case 'next_round':
@@ -196,11 +205,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
 
             case 'game_result':
+                console.log('Game result received:', data);
                 gameStatus.innerHTML = `
                     <h3>${data.message}</h3>
-                    <p>امتیاز شما در این بازی: ${data.your_score} از ۵</p>
-                    <p>امتیاز حریف در این بازی: ${data.opponent_score} از ۵</p>
-                    <p>امتیاز کل شما: ${data.total_score}</p>
+                    <p>امتیاز نهایی شما: ${data.your_score}</p>
+                    <p>امتیاز نهایی حریف: ${data.opponent_score}</p>
                     <button onclick="location.reload()">بازی مجدد</button>
                 `;
                 questionContainer.innerHTML = '';
@@ -232,6 +241,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button 
                         class="option"
                         onclick="handleAnswer('${opt}')"
+                        data-answer="${opt}"
                     >
                         ${question[opt]}
                     </button>

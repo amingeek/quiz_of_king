@@ -97,8 +97,8 @@ class QuizWebSocket implements MessageComponentInterface {
             throw new Exception('بازی یافت نشد');
         }
 
-        $player1Id = $gameData['player1'];
-        $player2Id = $gameData['player2'];
+        $player1 = $gameData['player1'];
+        $player2 = $gameData['player2'];
         $fromUserId = $this->userConnections[$from];
 
         $stmt = $this->db->prepare("SELECT username FROM users WHERE id = :id");
@@ -107,7 +107,7 @@ class QuizWebSocket implements MessageComponentInterface {
         $row = $result->fetchArray(SQLITE3_ASSOC);
         $fromUsername = $row['username'] ?? 'Unknown';
 
-        foreach ([$player1Id, $player2Id] as $playerId) {
+        foreach ([$player1, $player2] as $playerId) {
             if ($conn = $this->findConnectionById($playerId)) {
                 $conn->send(json_encode([
                     'type' => 'chat_message',
@@ -175,6 +175,11 @@ class QuizWebSocket implements MessageComponentInterface {
 
             $player1Id = $this->redis->hget('user_map', $player1);
             $player2Id = $this->redis->hget('user_map', $player2);
+
+            if (!$player1Id || !$player2Id) {
+                throw new Exception("خطا در تطابق کاربران");
+            }
+
             $player1Info = $this->getUserInfo($player1Id);
             $player2Info = $this->getUserInfo($player2Id);
 
@@ -201,13 +206,21 @@ class QuizWebSocket implements MessageComponentInterface {
         $user1Id = $this->redis->hget('user_map', $p1Id);
         $user2Id = $this->redis->hget('user_map', $p2Id);
 
+        if (!$user1Id || !$user2Id) {
+            throw new Exception("خطا در شناسایی کاربران");
+        }
+
         $this->redis->hmset("game:$gameId", [
-            'player1' => $p1Id,
-            'player2' => $p2Id,
-            'question' => json_encode($question),
-            'scores' => json_encode([$user1Id => 0, $user2Id => 0]),
-            'round' => 1
+            'player1'   => $p1Id,
+            'player2'   => $p2Id,
+            'user1'     => $user1Id,
+            'user2'     => $user2Id,
+            'question'  => json_encode($question),
+            'scores'    => json_encode([$user1Id => 0, $user2Id => 0]),
+            'round'     => 1
         ]);
+
+        $this->redis->expire("game:$gameId", 3600);
 
         foreach ([$p1Id, $p2Id] as $playerId) {
             if ($conn = $this->findConnectionById($playerId)) {
@@ -233,35 +246,29 @@ class QuizWebSocket implements MessageComponentInterface {
             throw new Exception('بازی یافت نشد');
         }
 
-        // ثبت پاسخ فقط اگر قبلاً ثبت نشده باشد
-        if ($this->redis->hget($gameKey, "answer:{$userId}") === false) {
-            $this->redis->hset($gameKey, "answer:{$userId}", $data['answer']);
+        if ($this->redis->hsetnx($gameKey, "answer:{$userId}", $data['answer'])) {
             $from->send(json_encode([
                 'type' => 'answer_received',
                 'message' => 'پاسخ شما ثبت شد. منتظر حریف...'
-            ]));
+            ])); // پرانتز اضافی حذف شد
         }
 
-        $player1ResourceId = $gameData['player1'];
-        $player2ResourceId = $gameData['player2'];
-        $user1Id = $this->redis->hget('user_map', $player1ResourceId);
-        $user2Id = $this->redis->hget('user_map', $player2ResourceId);
+        $user1Id = $gameData['user1'];
+        $user2Id = $gameData['user2'];
 
-        $answer1Exists = $this->redis->hget($gameKey, "answer:{$user1Id}") !== false;
-        $answer2Exists = $this->redis->hget($gameKey, "answer:{$user2Id}") !== false;
+        $answer1Exists = $this->redis->hexists($gameKey, "answer:{$user1Id}");
+        $answer2Exists = $this->redis->hexists($gameKey, "answer:{$user2Id}");
 
         if ($answer1Exists && $answer2Exists) {
             $this->endRound($gameKey, $gameData);
         }
     }
-
     private function endRound($gameKey, $gameData) {
         $question = json_decode($gameData['question'], true);
         $player1ResourceId = $gameData['player1'];
         $player2ResourceId = $gameData['player2'];
-
-        $user1Id = $this->redis->hget('user_map', $player1ResourceId);
-        $user2Id = $this->redis->hget('user_map', $player2ResourceId);
+        $user1Id = $gameData['user1'];
+        $user2Id = $gameData['user2'];
 
         $answer1 = $this->redis->hget($gameKey, "answer:{$user1Id}");
         $answer2 = $this->redis->hget($gameKey, "answer:{$user2Id}");
@@ -271,28 +278,39 @@ class QuizWebSocket implements MessageComponentInterface {
         $p2Correct = ($answer2 === $correctAnswer);
 
         $scores = json_decode($gameData['scores'], true);
-        if ($p1Correct) $scores[$user1Id] = ($scores[$user1Id] ?? 0) + 1;
-        if ($p2Correct) $scores[$user2Id] = ($scores[$user2Id] ?? 0) + 1;
+        $scores[$user1Id] = ($scores[$user1Id] ?? 0) + ($p1Correct ? 1 : 0);
+        $scores[$user2Id] = ($scores[$user2Id] ?? 0) + ($p2Correct ? 1 : 0);
+
         $this->redis->hset($gameKey, 'scores', json_encode($scores));
 
         foreach ([$player1ResourceId, $player2ResourceId] as $connId) {
             if ($conn = $this->findConnectionById($connId)) {
-                $isPlayer1 = $connId == $player1ResourceId;
+                $currentUserId = $this->redis->hget('user_map', $connId);
+                $isPlayer1 = ($currentUserId == $user1Id);
+
+                $yourScore = $isPlayer1 ? $scores[$user1Id] : $scores[$user2Id];
+                $opponentScore = $isPlayer1 ? $scores[$user2Id] : $scores[$user1Id];
+
                 $conn->send(json_encode([
                     'type' => 'round_result',
                     'round' => (int)$gameData['round'],
-                    'message' => ($isPlayer1 ? $p1Correct : $p2Correct) ? 'پاسخ صحیح!' : 'پاسخ اشتباه!'
+                    'your_score' => $yourScore,
+                    'opponent_score' => $opponentScore,
+                    'message' => ($isPlayer1 ? $p1Correct : $p2Correct) ? 'پاسخ صحیح!' : 'پاسخ اشتباه!',
+                    'your_answer' => $isPlayer1 ? $answer1 : $answer2,
+                    'correct_answer' => $correctAnswer
                 ]));
             }
         }
 
-        $this->redis->hdel($gameKey, "answer:{$user1Id}");
-        $this->redis->hdel($gameKey, "answer:{$user2Id}");
+        $this->redis->hdel($gameKey, "answer:{$user1Id}", "answer:{$user2Id}");
 
-        if ((int)$gameData['round'] >= 5) {
+        $currentRound = (int)$gameData['round'];
+        if ($currentRound >= 5) {
             $this->endGame($gameKey, $gameData);
         } else {
-            $newRound = $this->redis->hincrby($gameKey, 'round', 1);
+            $newRound = $currentRound + 1;
+            $this->redis->hset($gameKey, 'round', $newRound);
             $newQuestion = $this->getRandomQuestion();
             $this->redis->hset($gameKey, 'question', json_encode($newQuestion));
 
@@ -301,7 +319,8 @@ class QuizWebSocket implements MessageComponentInterface {
                     $conn->send(json_encode([
                         'type' => 'next_round',
                         'round' => $newRound,
-                        'question' => $newQuestion
+                        'question' => $newQuestion,
+                        'scores' => $scores
                     ]));
                 }
             }
@@ -312,54 +331,46 @@ class QuizWebSocket implements MessageComponentInterface {
         $scores = json_decode($gameData['scores'], true);
         $player1ResourceId = $gameData['player1'];
         $player2ResourceId = $gameData['player2'];
-        $user1Id = $this->redis->hget('user_map', $player1ResourceId);
-        $user2Id = $this->redis->hget('user_map', $player2ResourceId);
+        $user1Id = $gameData['user1'];
+        $user2Id = $gameData['user2'];
 
         $p1Score = $scores[$user1Id] ?? 0;
         $p2Score = $scores[$user2Id] ?? 0;
 
-        $p1Info = $this->getUserInfo($user1Id);
-        $p2Info = $this->getUserInfo($user2Id);
-
-        $resultMessage = '';
-        if ($p1Score > $p2Score) {
-            $resultMessage = "{$p1Info['username']} برنده شد! 🎉";
-            $this->updateScore($user1Id, 20);
-        } elseif ($p2Score > $p1Score) {
-            $resultMessage = "{$p2Info['username']} برنده شد! 🎉";
-            $this->updateScore($user2Id, 20);
-        } else {
-            $resultMessage = "بازی مساوی شد! 🤝";
-            $this->updateScore($user1Id, 10);
-            $this->updateScore($user2Id, 10);
-        }
-
-        $stmt1 = $this->db->prepare("SELECT score FROM users WHERE id = :id");
-        $stmt1->bindValue(':id', $user1Id, SQLITE3_INTEGER);
-        $result1 = $stmt1->execute();
-        $row1 = $result1->fetchArray(SQLITE3_ASSOC);
-        $finalScore1 = $row1['score'] ?? 0;
-
-        $stmt2 = $this->db->prepare("SELECT score FROM users WHERE id = :id");
-        $stmt2->bindValue(':id', $user2Id, SQLITE3_INTEGER);
-        $result2 = $stmt2->execute();
-        $row2 = $result2->fetchArray(SQLITE3_ASSOC);
-        $finalScore2 = $row2['score'] ?? 0;
+        $this->updateScore($user1Id, $p1Score);
+        $this->updateScore($user2Id, $p2Score);
 
         foreach ([$player1ResourceId, $player2ResourceId] as $connId) {
             if ($conn = $this->findConnectionById($connId)) {
-                $isPlayer1 = $connId == $player1ResourceId;
+                $currentUserId = $this->redis->hget('user_map', $connId);
+                $isPlayer1 = ($currentUserId == $user1Id);
+
+                $yourScore = $isPlayer1 ? $p1Score : $p2Score;
+                $opponentScore = $isPlayer1 ? $p2Score : $p1Score;
+
                 $conn->send(json_encode([
                     'type' => 'game_result',
-                    'message' => $resultMessage,
-                    'your_score' => $isPlayer1 ? $p1Score : $p2Score,
-                    'opponent_score' => $isPlayer1 ? $p2Score : $p1Score,
-                    'total_score' => $isPlayer1 ? $finalScore1 : $finalScore2
+                    'message' => $this->getResultMessage($p1Score, $p2Score, $user1Id, $user2Id),
+                    'your_score' => $yourScore,
+                    'opponent_score' => $opponentScore
                 ]));
             }
         }
 
         $this->redis->del($gameKey);
+    }
+
+    private function getResultMessage($p1Score, $p2Score, $user1Id, $user2Id) {
+        $p1Info = $this->getUserInfo($user1Id);
+        $p2Info = $this->getUserInfo($user2Id);
+
+        if ($p1Score > $p2Score) {
+            return "{$p1Info['username']} برنده شد! 🎉";
+        } elseif ($p2Score > $p1Score) {
+            return "{$p2Info['username']} برنده شد! 🎉";
+        } else {
+            return "بازی مساوی شد! 🤝";
+        }
     }
 
     private function updateScore($userId, $score) {
