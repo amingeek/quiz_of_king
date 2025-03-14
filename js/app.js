@@ -206,12 +206,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             case 'game_result':
                 console.log('Game result received:', data);
+
+                // استخراج امتیازها از داده‌های دریافتی
+                const scores = data.scores || {};
+                const userId = decodeJWT(localStorage.getItem('jwt_token'))?.sub; // شناسه کاربر فعلی
+                const opponentId = Object.keys(scores).find(id => id != userId); // شناسه حریف
+
+                const yourScore = scores[userId] || 0;
+                const opponentScore = scores[opponentId] || 0;
+
+                // نمایش نتیجه نهایی
                 gameStatus.innerHTML = `
-                    <h3>${data.message}</h3>
-                    <p>امتیاز نهایی شما: ${data.your_score}</p>
-                    <p>امتیاز نهایی حریف: ${data.opponent_score}</p>
-                    <button onclick="location.reload()">بازی مجدد</button>
-                `;
+        <h3>${data.message}</h3>
+        <p>امتیاز نهایی شما: ${yourScore}</p>
+        <p>امتیاز نهایی حریف: ${opponentScore}</p>
+        <button onclick="location.reload()">بازی مجدد</button>
+    `;
                 questionContainer.innerHTML = '';
                 playersInfo.style.display = 'none';
                 break;
