@@ -1,4 +1,7 @@
 let currentGameId;
+let currentRound = 1;
+let playerScores = {};
+
 document.addEventListener('DOMContentLoaded', () => {
     const apiEndpoint = 'http://193.228.168.186/api.php';
     const wsEndpoint = 'ws://193.228.168.186:8081';
@@ -9,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const gameStatus = document.getElementById('game-status');
     const questionContainer = document.getElementById('question-container');
     const sendMessageBtn = document.getElementById('send-message-btn');
+    const playersInfo = document.getElementById('players-info');
 
     const sections = {
         register: document.getElementById('register-section'),
@@ -161,8 +165,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 gameStatus.textContent = data.message;
                 break;
 
+            case 'answer_received':
+                gameStatus.textContent = data.message;
+                questionContainer.innerHTML = '<p>منتظر پاسخ حریف...</p>';
+                break;
+
             case 'players_matched':
-                const playersInfo = document.getElementById('players-info');
                 playersInfo.style.display = 'block';
                 document.getElementById('player1-username').textContent = data.players.player1.username;
                 document.getElementById('player1-picture').src = `http://193.228.168.186/uploads/${data.players.player1.profile_picture}`;
@@ -173,18 +181,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
             case 'game_start':
                 currentGameId = data.game_id;
+                currentRound = 1;
+                playerScores = {};
                 renderQuestion(data.question);
-                gameStatus.textContent = 'بازی شروع شد!';
+                gameStatus.textContent = 'بازی شروع شد! مرحله ۱ از ۵';
+                break;
+
+            case 'round_result':
+                const token = localStorage.getItem('jwt_token');
+                const decoded = decodeJWT(token);
+                const userId = decoded?.sub;
+                if (userId) {
+                    const yourScore = data.scores[userId] || 0;
+                    const opponentId = Object.keys(data.scores).find(id => id !== userId);
+                    const opponentScore = data.scores[opponentId] || 0;
+                    gameStatus.innerHTML = `
+                        مرحله ${data.round} از ۵<br>
+                        پاسخ شما: ${data.your_answer}<br>
+                        پاسخ صحیح: ${data.correct_answer}<br>
+                        امتیاز شما: ${yourScore} - امتیاز حریف: ${opponentScore}<br>
+                        ${data.message}
+                    `;
+                }
+                break;
+
+            case 'next_round':
+                currentRound = data.round;
+                renderQuestion(data.question);
+                gameStatus.textContent = `مرحله ${currentRound} از ۵`;
                 break;
 
             case 'game_result':
                 gameStatus.innerHTML = `
                     <h3>${data.message}</h3>
-                    ${data.winner_id ? `<p>امتیاز شما: +20</p>` : ''}
+                    <p>امتیاز شما: ${data.your_score}</p>
+                    <p>امتیاز حریف: ${data.opponent_score}</p>
                     <button onclick="location.reload()">بازی مجدد</button>
                 `;
                 questionContainer.innerHTML = '';
-                document.getElementById('players-info').style.display = 'none';
+                playersInfo.style.display = 'none';
                 break;
 
             case 'chat_message':
@@ -233,6 +268,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+function decodeJWT(token) {
+    try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(jsonPayload);
+    } catch (e) {
+        return null;
+    }
+}
+
 window.handleAnswer = (answer) => {
     const ws = window.ws;
     const token = localStorage.getItem('jwt_token');
@@ -244,8 +292,8 @@ window.handleAnswer = (answer) => {
             answer: answer,
             token: token
         };
-
         ws.send(JSON.stringify(payload));
+        document.querySelectorAll('.option').forEach(btn => btn.disabled = true);
     } else {
         console.error('WebSocket not open, token missing, or game_id not set');
     }
