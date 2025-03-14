@@ -1,6 +1,5 @@
 let currentGameId;
 let currentRound = 1;
-let playerScores = {};
 
 document.addEventListener('DOMContentLoaded', () => {
     const apiEndpoint = 'http://193.228.168.186/api.php';
@@ -167,7 +166,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             case 'answer_received':
                 gameStatus.textContent = data.message;
-                questionContainer.innerHTML = '<p>منتظر پاسخ حریف...</p>';
                 break;
 
             case 'players_matched':
@@ -182,40 +180,27 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'game_start':
                 currentGameId = data.game_id;
                 currentRound = 1;
-                playerScores = {};
                 renderQuestion(data.question);
                 gameStatus.textContent = 'بازی شروع شد! مرحله ۱ از ۵';
                 break;
 
             case 'round_result':
-                const token = localStorage.getItem('jwt_token');
-                const decoded = decodeJWT(token);
-                const userId = decoded?.sub;
-                if (userId) {
-                    const yourScore = data.scores[userId] || 0;
-                    const opponentId = Object.keys(data.scores).find(id => id !== userId);
-                    const opponentScore = data.scores[opponentId] || 0;
-                    gameStatus.innerHTML = `
-                        مرحله ${data.round} از ۵<br>
-                        پاسخ شما: ${data.your_answer}<br>
-                        پاسخ صحیح: ${data.correct_answer}<br>
-                        امتیاز شما: ${yourScore} - امتیاز حریف: ${opponentScore}<br>
-                        ${data.message}
-                    `;
-                }
+                gameStatus.textContent = `مرحله ${data.round} از ۵ - ${data.message}`;
                 break;
 
             case 'next_round':
                 currentRound = data.round;
                 renderQuestion(data.question);
                 gameStatus.textContent = `مرحله ${currentRound} از ۵`;
+                document.querySelectorAll('.option').forEach(btn => btn.disabled = false);
                 break;
 
             case 'game_result':
                 gameStatus.innerHTML = `
                     <h3>${data.message}</h3>
-                    <p>امتیاز شما: ${data.your_score}</p>
-                    <p>امتیاز حریف: ${data.opponent_score}</p>
+                    <p>امتیاز شما در این بازی: ${data.your_score} از ۵</p>
+                    <p>امتیاز حریف در این بازی: ${data.opponent_score} از ۵</p>
+                    <p>امتیاز کل شما: ${data.total_score}</p>
                     <button onclick="location.reload()">بازی مجدد</button>
                 `;
                 questionContainer.innerHTML = '';
