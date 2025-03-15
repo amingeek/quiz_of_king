@@ -31,28 +31,6 @@ class QuizWebSocket implements MessageComponentInterface {
         $this->initializeDatabase();
     }
 
-    // تابع کمکی برای بررسی صحت پاسخ
-    private function isAnswerCorrect($providedAnswer, $question) {
-        $correctAnswer = $question['correct_answer'];
-        $correctAnswerIndex = array_search($correctAnswer, ['option1', 'option2', 'option3', 'option4']) + 1;
-        $options = [
-            1 => $question['option1'],
-            2 => $question['option2'],
-            3 => $question['option3'],
-            4 => $question['option4']
-        ];
-        $correctText = $options[$correctAnswerIndex];
-
-        if (is_numeric($providedAnswer)) {
-            return ((int)$providedAnswer === $correctAnswerIndex);
-        } elseif (in_array($providedAnswer, ['option1', 'option2', 'option3', 'option4'])) {
-            return ($providedAnswer === $correctAnswer);
-        } else {
-            return ($providedAnswer === $correctText);
-        }
-    }
-
-
     public function onOpen(ConnectionInterface $conn) {
         $this->clients->attach($conn);
         $this->userConnections->attach($conn, null);
@@ -149,8 +127,8 @@ class QuizWebSocket implements MessageComponentInterface {
         $this->redis->hdel('connections', $conn->resourceId);
         $this->redis->hdel('user_map', $conn->resourceId);
         echo "Connection closed: {$conn->resourceId}\n";
-
     }
+
     private function initializeDatabase() {
         $this->db->exec("
             CREATE TABLE IF NOT EXISTS users (
@@ -180,14 +158,9 @@ class QuizWebSocket implements MessageComponentInterface {
             $this->db->exec("
                 INSERT INTO questions 
                 (question, option1, option2, option3, option4, correct_answer)
-                VALUES (
-                    'پایتخت فرانسه کدام است؟',
-                    'پاریس',
-                    'لندن',
-                    'برلین',
-                    'مادرید',
-                    'option1'
-                )
+                VALUES 
+                ('پایتخت فرانسه کدام است؟', 'پاریس', 'لندن', 'برلین', 'مادرید', 'option1'),
+                ('2 + 2 چند می‌شود؟', '3', '4', '5', '6', 'option2')
             ");
         }
     }
@@ -272,12 +245,11 @@ class QuizWebSocket implements MessageComponentInterface {
         // دیباگ: نمایش دقیق پاسخ دریافت‌شده
         echo "User $userId answered: " . json_encode($data['answer']) . " for game {$data['game_id']}\n";
 
-        if ($this->redis->hsetnx($gameKey, "answer:{$userId}", $data['answer'])) {
-            $from->send(json_encode([
-                'type' => 'answer_received',
-                'message' => 'پاسخ شما ثبت شد. منتظر حریف...'
-            ]));
-        }
+        $this->redis->hset($gameKey, "answer:{$userId}", $data['answer']);
+        $from->send(json_encode([
+            'type' => 'answer_received',
+            'message' => 'پاسخ شما ثبت شد. منتظر حریف...'
+        ]));
 
         $user1Id = (int)$gameData['user1'];
         $user2Id = (int)$gameData['user2'];
@@ -300,28 +272,54 @@ class QuizWebSocket implements MessageComponentInterface {
 
         $answer1 = $this->redis->hget($gameKey, "answer:{$user1Id}");
         $answer2 = $this->redis->hget($gameKey, "answer:{$user2Id}");
+        $correctAnswer = $question['correct_answer'];
 
-        // بررسی صحت پاسخ هر بازیکن به‌صورت جداگانه
-        $p1Correct = $this->isAnswerCorrect($answer1, $question);
-        $p2Correct = $this->isAnswerCorrect($answer2, $question);
+        // دیباگ دقیق
+        echo "Game $gameId - Question: {$question['question']}\n";
+        echo "Options: " . json_encode([
+                'option1' => $question['option1'],
+                'option2' => $question['option2'],
+                'option3' => $question['option3'],
+                'option4' => $question['option4']
+            ]) . "\n";
+        echo "Correct Answer: $correctAnswer\n";
+        echo "User1 ($user1Id) Answer: " . json_encode($answer1) . "\n";
+        echo "User2 ($user2Id) Answer: " . json_encode($answer2) . "\n";
 
-        // دیباگ: نمایش نتایج
+        // تبدیل پاسخ صحیح به ایندکس (1 تا 4)
+        $correctAnswerIndex = array_search($correctAnswer, ['option1', 'option2', 'option3', 'option4']) + 1;
+        $options = [
+            1 => $question['option1'],
+            2 => $question['option2'],
+            3 => $question['option3'],
+            4 => $question['option4']
+        ];
+        $correctText = $options[$correctAnswerIndex];
+
+        // بررسی پاسخ‌ها با انعطاف‌پذیری بیشتر
+        $p1Correct = $this->isAnswerCorrect($answer1, $correctAnswerIndex, $correctText);
+        $p2Correct = $this->isAnswerCorrect($answer2, $correctAnswerIndex, $correctText);
+
         echo "P1 Correct: " . (int)$p1Correct . ", P2 Correct: " . (int)$p2Correct . "\n";
 
+        // به‌روزرسانی امتیازها
         if ($p1Correct) {
-            $this->gameScores[$gameId][$user1Id]++;
+            $this->gameScores[$gameId][$user1Id] = ($this->gameScores[$gameId][$user1Id] ?? 0) + 1;
         }
         if ($p2Correct) {
-            $this->gameScores[$gameId][$user2Id]++;
+            $this->gameScores[$gameId][$user2Id] = ($this->gameScores[$gameId][$user2Id] ?? 0) + 1;
         }
 
+        echo "Scores - User1 ($user1Id): " . ($this->gameScores[$gameId][$user1Id] ?? 0) . ", User2 ($user2Id): " . ($this->gameScores[$gameId][$user2Id] ?? 0) . "\n";
+
+        // ارسال نتایج به کلاینت‌ها
         foreach ([$player1ResourceId, $player2ResourceId] as $connId) {
             if ($conn = $this->findConnectionById($connId)) {
                 $currentUserId = (int)$this->redis->hget('user_map', $connId);
                 $isPlayer1 = ($currentUserId === $user1Id);
 
-                $yourScore = $isPlayer1 ? $this->gameScores[$gameId][$user1Id] : $this->gameScores[$gameId][$user2Id];
-                $opponentScore = $isPlayer1 ? $this->gameScores[$gameId][$user2Id] : $this->gameScores[$gameId][$user1Id];
+                $yourScore = $isPlayer1 ? ($this->gameScores[$gameId][$user1Id] ?? 0) : ($this->gameScores[$gameId][$user2Id] ?? 0);
+                $opponentScore = $isPlayer1 ? ($this->gameScores[$gameId][$user2Id] ?? 0) : ($this->gameScores[$gameId][$user1Id] ?? 0);
 
                 $conn->send(json_encode([
                     'type' => 'round_result',
@@ -330,12 +328,13 @@ class QuizWebSocket implements MessageComponentInterface {
                     'opponent_score' => $opponentScore,
                     'message' => ($isPlayer1 ? $p1Correct : $p2Correct) ? 'پاسخ صحیح!' : 'پاسخ اشتباه!',
                     'your_answer' => $isPlayer1 ? $answer1 : $answer2,
-                    'correct_answer' => $question['correct_answer']
+                    'correct_answer' => $correctAnswerIndex
                 ]));
             }
         }
 
-        $this->redis->hdel($gameKey, "answer:{$user1Id}", "answer:{$user2Id}");
+        $this->redis->hdel($gameKey, "answer:{$user1Id}");
+        $this->redis->hdel($gameKey, "answer:{$user2Id}");
 
         $currentRound = (int)$gameData['round'];
         if ($currentRound >= 5) {
@@ -353,13 +352,30 @@ class QuizWebSocket implements MessageComponentInterface {
                         'round' => $newRound,
                         'question' => $newQuestion,
                         'scores' => [
-                            $user1Id => $this->gameScores[$gameId][$user1Id],
-                            $user2Id => $this->gameScores[$gameId][$user2Id]
+                            $user1Id => $this->gameScores[$gameId][$user1Id] ?? 0,
+                            $user2Id => $this->gameScores[$gameId][$user2Id] ?? 0
                         ]
                     ]));
                 }
             }
         }
+    }
+
+    private function isAnswerCorrect($answer, $correctIndex, $correctText) {
+        // دیباگ: نمایش پاسخ دریافت‌شده
+        echo "Checking answer: " . json_encode($answer) . " against index: $correctIndex, text: $correctText\n";
+
+        // بررسی فرمت‌های مختلف پاسخ
+        if (is_numeric($answer) && intval($answer) === $correctIndex) {
+            return true;
+        }
+        if ($answer === "option{$correctIndex}") {
+            return true;
+        }
+        if ($answer === $correctText) {
+            return true;
+        }
+        return false;
     }
 
     private function endGame($gameKey, $gameData) {
@@ -372,8 +388,7 @@ class QuizWebSocket implements MessageComponentInterface {
         $p1Score = $this->gameScores[$gameId][$user1Id] ?? 0;
         $p2Score = $this->gameScores[$gameId][$user2Id] ?? 0;
 
-        // دیباگ: نمایش امتیازها قبل از پایان بازی
-        echo "Final Scores - User1: $p1Score, User2: $p2Score\n";
+        echo "Final Scores - User1 ($user1Id): $p1Score, User2 ($user2Id): $p2Score\n";
 
         $this->updateScore($user1Id, $p1Score);
         $this->updateScore($user2Id, $p2Score);
